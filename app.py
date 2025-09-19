@@ -7,16 +7,12 @@ from werkzeug.utils import secure_filename
 import glob
 import threading
 import json
-from datetime import datetime
 
 app = Flask(__name__)
 
 # Create directories if they don't exist
 os.makedirs('/app/downloads', exist_ok=True)
 os.makedirs('/app/status', exist_ok=True)
-
-# In-memory status tracking (optional)
-download_status = {}
 
 ydl_opts_fast = {
     'format': 'bestaudio/best',
@@ -40,9 +36,9 @@ ydl_opts_fast = {
 
 def download_audio_task(url, job_id):
     """Background task to download audio"""
+    status_file = f'/app/status/{job_id}.json'
+    
     try:
-        status_file = f'/app/status/{job_id}.json'
-        
         # Update status to processing
         status_data = {
             'status': 'processing',
@@ -56,22 +52,24 @@ def download_audio_task(url, job_id):
         start_time = time.time()
         
         with yt_dlp.YoutubeDL(ydl_opts_fast) as ydl:
-            info = ydl.extract_info(url, download=True)
+            # Extract info first to get title
+            info = ydl.extract_info(url, download=False)
+            title = info.get('title', 'audio') if info else 'audio'
+            
+            # Now download
+            ydl.download([url])
             
             duration = time.time() - start_time
             
             # Find the downloaded file
-            time.sleep(1)
-            mp3_files = glob.glob('/app/downloads/*.mp3')
-            if not mp3_files:
-                audio_files = glob.glob('/app/downloads/*.*')
-                audio_files = [f for f in audio_files if f.endswith(('.mp3', '.webm', '.m4a'))]
-                if not audio_files:
-                    raise Exception("No audio file created")
-                latest_file = max(audio_files, key=os.path.getctime)
-            else:
-                latest_file = max(mp3_files, key=os.path.getctime)
+            time.sleep(2)  # Give time for file conversion
+            audio_files = glob.glob('/app/downloads/*.*')
+            audio_files = [f for f in audio_files if f.endswith(('.mp3', '.webm', '.m4a', '.opus'))]
             
+            if not audio_files:
+                raise Exception("No audio file was created after download")
+            
+            latest_file = max(audio_files, key=os.path.getctime)
             base_name = os.path.basename(latest_file)
             safe_name = secure_filename(base_name)
             
@@ -82,13 +80,11 @@ def download_audio_task(url, job_id):
                 'download_time': round(duration, 2),
                 'download_url': f"https://yt-dlp-munax.koyeb.app/download-file/{safe_name}",
                 'filename': base_name,
-                'title': info.get('title', 'Unknown Title') if info else 'Unknown',
+                'title': title,
                 'duration': info.get('duration', 0) if info else 0,
                 'completion_time': time.time()
             }
-            with open(status_file, 'w') as f:
-                json.dump(status_data, f)
-                
+            
     except Exception as e:
         # Update status to failed
         status_data = {
@@ -97,8 +93,10 @@ def download_audio_task(url, job_id):
             'error': str(e),
             'failure_time': time.time()
         }
-        with open(status_file, 'w') as f:
-            json.dump(status_data, f)
+    
+    # Save status (whether success or failure)
+    with open(status_file, 'w') as f:
+        json.dump(status_data, f)
 
 @app.route('/fast-audio', methods=['GET'])
 def fast_audio():
@@ -135,12 +133,6 @@ def check_status(job_id):
         with open(status_file, 'r') as f:
             status_data = json.load(f)
         
-        # Add current status info
-        if status_data['status'] == 'processing':
-            elapsed = time.time() - status_data['start_time']
-            status_data['elapsed_seconds'] = round(elapsed, 2)
-            status_data['message'] = f"Processing... {elapsed:.0f} seconds elapsed"
-        
         return jsonify(status_data)
         
     except Exception as e:
@@ -175,29 +167,31 @@ def direct_audio():
         start_time = time.time()
         
         with yt_dlp.YoutubeDL(ydl_opts_fast) as ydl:
-            info = ydl.extract_info(url, download=True)
+            # Extract info first
+            info = ydl.extract_info(url, download=False)
+            title = info.get('title', 'Unknown Title') if info else 'Unknown Title'
+            
+            # Download
+            ydl.download([url])
             
             duration = time.time() - start_time
             
             # Find the downloaded file
-            time.sleep(1)
-            mp3_files = glob.glob('/app/downloads/*.mp3')
-            if not mp3_files:
-                audio_files = glob.glob('/app/downloads/*.*')
-                audio_files = [f for f in audio_files if f.endswith(('.mp3', '.webm', '.m4a'))]
-                if not audio_files:
-                    return jsonify({"error": "No audio file created"}), 500
-                latest_file = max(audio_files, key=os.path.getctime)
-            else:
-                latest_file = max(mp3_files, key=os.path.getctime)
+            time.sleep(2)
+            audio_files = glob.glob('/app/downloads/*.*')
+            audio_files = [f for f in audio_files if f.endswith(('.mp3', '.webm', '.m4a', '.opus'))]
             
+            if not audio_files:
+                return jsonify({"error": "No audio file created"}), 500
+            
+            latest_file = max(audio_files, key=os.path.getctime)
             base_name = os.path.basename(latest_file)
             safe_name = secure_filename(base_name)
             
             return jsonify({
                 "status": "success", 
-                "title": info.get('title', 'Unknown Title'),
-                "duration": info.get('duration', 0),
+                "title": title,
+                "duration": info.get('duration', 0) if info else 0,
                 "download_time": round(duration, 2),
                 "download_url": f"https://yt-dlp-munax.koyeb.app/download-file/{safe_name}",
                 "filename": base_name,
@@ -207,7 +201,6 @@ def direct_audio():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# Cleanup functions
 @app.route('/cleanup-files')
 def cleanup_files():
     """Cleanup old files"""
@@ -247,15 +240,9 @@ def home():
             "direct_download": "/direct-audio?url=YOUTUBE_URL",
             "file_download": "/download-file/FILENAME.mp3",
             "cleanup": "/cleanup-files"
-        },
-        "usage_note": "For WhatsApp bots, use /fast-audio for instant response, then check status periodically"
+        }
     })
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    # Run cleanup on startup
-    try:
-        cleanup_files()
-    except:
-        pass
     app.run(host='0.0.0.0', port=port, debug=False)
