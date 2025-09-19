@@ -1,11 +1,16 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 import yt_dlp
 import os
 import time
+import uuid
+from werkzeug.utils import secure_filename
+import glob
 
 app = Flask(__name__)
 
-# Enhanced configuration with cookies and anti-bot measures
+# Create directories if they don't exist
+os.makedirs('/app/downloads', exist_ok=True)
+
 ydl_opts_fast = {
     'format': 'bestaudio/best',
     'postprocessors': [{
@@ -13,58 +18,17 @@ ydl_opts_fast = {
         'preferredcodec': 'mp3',
         'preferredquality': '192',
     }],
-    'outtmpl': '/tmp/%(title)s.%(ext)s',
+    'outtmpl': '/app/downloads/%(title)s.%(ext)s',
     'noplaylist': True,
     'socket_timeout': 30,
     'retries': 10,
     'fragment_retries': 10,
-    'extract_flat': False,
     'ignoreerrors': True,
-    
-    # Cookie authentication to avoid bot detection
     'cookiefile': 'cookies.txt',
-    
-    # Advanced options to avoid blocking
-    'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'referer': 'https://www.youtube.com/',
+    'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
     'throttled_rate': '1M',
     'sleep_interval': 2,
-    'max_sleep_interval': 5,
-    'extractor_args': {
-        'youtube': {
-            'player_client': ['web', 'android'],
-            'skip': ['dash', 'hls']
-        }
-    },
-    'compat_opts': ['no-youtube-unavailable-videos', 'no-playlist-metafiles'],
 }
-
-# Additional configuration for video downloads
-ydl_opts_video = {
-    'format': 'best[height<=720]',
-    'outtmpl': '/tmp/%(title)s.%(ext)s',
-    'noplaylist': True,
-    'socket_timeout': 30,
-    'retries': 10,
-    'fragment_retries': 10,
-    'ignoreerrors': True,
-    'cookiefile': 'cookies.txt',
-    'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'throttled_rate': '2M',
-    'sleep_interval': 3,
-}
-
-@app.route('/')
-def home():
-    return jsonify({
-        "message": "YT-DLP API is running successfully!",
-        "status": "active",
-        "endpoints": {
-            "audio": "/fast-audio?url=YOUTUBE_URL",
-            "video": "/download-video?url=YOUTUBE_URL",
-            "info": "/video-info?url=YOUTUBE_URL"
-        }
-    })
 
 @app.route('/fast-audio', methods=['GET'])
 def fast_audio():
@@ -80,84 +44,76 @@ def fast_audio():
             
             duration = time.time() - start_time
             
+            # Get the actual downloaded filename
+            original_filename = ydl.prepare_filename(info)
+            mp3_filename = original_filename.rsplit('.', 1)[0] + '.mp3'
+            base_name = os.path.basename(mp3_filename)
+            safe_name = secure_filename(base_name)
+            
             return jsonify({
                 "status": "success", 
                 "title": info.get('title', 'Unknown Title'),
                 "duration": info.get('duration', 0),
                 "download_time": round(duration, 2),
+                "download_url": f"https://yt-dlp-munax.koyeb.app/download-file/{safe_name}",
+                "original_filename": base_name,
+                "safe_filename": safe_name,
                 "message": "Audio downloaded successfully as MP3"
             })
     
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route('/download-video', methods=['GET'])
-def download_video():
-    url = request.args.get('url')
-    if not url:
-        return jsonify({"error": "No URL provided. Use ?url=YOUTUBE_URL"}), 400
-    
+@app.route('/download-file/<filename>')
+def download_file(filename):
     try:
-        start_time = time.time()
+        safe_filename = secure_filename(filename)
+        file_path = f"/app/downloads/{safe_filename}"
         
-        with yt_dlp.YoutubeDL(ydl_opts_video) as ydl:
-            info = ydl.extract_info(url, download=True)
+        # Check if file exists with secure filename
+        if os.path.exists(file_path):
+            return send_file(file_path, as_attachment=True, download_name=safe_filename)
+        
+        # If not found, search for files with original names
+        all_files = glob.glob('/app/downloads/*')
+        for actual_file in all_files:
+            actual_filename = os.path.basename(actual_file)
+            if secure_filename(actual_filename) == safe_filename:
+                return send_file(actual_file, as_attachment=True, download_name=safe_filename)
+        
+        return jsonify({"error": "File not found", "filename": filename}), 404
             
-            duration = time.time() - start_time
-            
-            return jsonify({
-                "status": "success", 
-                "title": info.get('title', 'Unknown Title'),
-                "duration": info.get('duration', 0),
-                "format": info.get('format', 'Unknown Format'),
-                "download_time": round(duration, 2),
-                "message": "Video downloaded successfully"
-            })
-    
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route('/video-info', methods=['GET'])
-def video_info():
-    url = request.args.get('url')
-    if not url:
-        return jsonify({"error": "No URL provided. Use ?url=YOUTUBE_URL"}), 400
-    
+# Cleanup function to remove old files
+@app.route('/cleanup')
+def cleanup_files():
     try:
-        # Options for info extraction only (no download)
-        info_opts = {
-            'quiet': True,
-            'no_warnings': False,
-            'cookiefile': 'cookies.txt',
-            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-        
-        with yt_dlp.YoutubeDL(info_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            
-            return jsonify({
-                "status": "success", 
-                "title": info.get('title'),
-                "duration": info.get('duration'),
-                "uploader": info.get('uploader'),
-                "view_count": info.get('view_count'),
-                "formats": [{
-                    "format_id": f.get('format_id'),
-                    "ext": f.get('ext'),
-                    "resolution": f.get('resolution'),
-                    "filesize": f.get('filesize')
-                } for f in info.get('formats', [])[:5]]  # First 5 formats only
-            })
-    
+        files = glob.glob('/app/downloads/*')
+        deleted_count = 0
+        for file_path in files:
+            if os.path.isfile(file_path) and time.time() - os.path.getctime(file_path) > 3600:
+                os.remove(file_path)
+                deleted_count += 1
+        return jsonify({
+            "message": "Cleanup completed", 
+            "deleted_files": deleted_count,
+            "remaining_files": len(glob.glob('/app/downloads/*'))
+        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route('/health', methods=['GET'])
-def health_check():
+@app.route('/')
+def home():
     return jsonify({
-        "status": "healthy",
-        "timestamp": time.time(),
-        "service": "yt-dlp-api"
+        "message": "Munax-API is running successfully!",
+        "status": "active",
+        "endpoints": {
+            "audio_download": "/fast-audio?url=YOUTUBE_URL",
+            "file_download": "/download-file/FILENAME.mp3",
+            "cleanup": "/cleanup"
+        }
     })
 
 if __name__ == '__main__':
