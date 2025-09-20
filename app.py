@@ -16,21 +16,16 @@ app = Flask(__name__)
 os.makedirs('/app/downloads', exist_ok=True)
 os.makedirs('/app/metadata', exist_ok=True)
 
-# Enhanced anti-blocking configurations
+# Enhanced browser impersonation configurations
 USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
-    'Mozilla/5.0 (Android 13; Mobile; rv:109.0) Gecko/109.0 Firefox/109.0',
-    'Mozilla/5.0 (iPad; CPU OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
-    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36 Edg/117.0.2045.60'
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 ]
-
-# IP rotation (if you have proxies)
-PROXIES = []  # Add your proxies here if available: ['http://proxy1:port', 'http://proxy2:port']
 
 # Rate limiting protection
 request_timestamps = []
-MAX_REQUESTS_PER_MINUTE = 15
+MAX_REQUESTS_PER_MINUTE = 20
 
 def rate_limit_check():
     """Prevent API abuse"""
@@ -47,32 +42,35 @@ def rate_limit_check():
 
 def extract_video_id(url):
     """Extract YouTube video ID from various URL formats"""
-    patterns = [
-        r'(?:v=|\/)([0-9A-Za-z_-]{11}).*',
-        r'youtu\.be\/([0-9A-Za-z_-]{11})',
-        r'embed\/([0-9A-Za-z_-]{11})',
-        r'shorts\/([0-9A-Za-z_-]{11})'
-    ]
-    
-    for pattern in patterns:
-        match = re.search(pattern, url)
-        if match and len(match.group(1)) == 11:
-            return match.group(1)
-    return None
+    try:
+        patterns = [
+            r'(?:v=|\/)([0-9A-Za-z_-]{11}).*',
+            r'youtu\.be\/([0-9A-Za-z_-]{11})',
+            r'embed\/([0-9A-Za-z_-]{11})',
+            r'shorts\/([0-9A-Za-z_-]{11})'
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, url)
+            if match and len(match.group(1)) == 11:
+                return match.group(1)
+        return None
+    except:
+        return None
 
 def auto_cleanup():
-    """Auto-cleanup every 2 hours"""
+    """Auto-cleanup every hour"""
     while True:
         try:
-            time.sleep(7200)  # 2 hours
+            time.sleep(3600)  # 1 hour
             current_time = time.time()
             
-            # Clean downloads older than 4 hours
+            # Clean downloads older than 2 hours
             for file_path in glob.glob('/app/downloads/*'):
-                if current_time - os.path.getctime(file_path) > 14400:
+                if current_time - os.path.getctime(file_path) > 7200:
                     try:
                         os.remove(file_path)
-                        # Also remove corresponding metadata
+                        # Remove corresponding metadata
                         meta_path = f"/app/metadata/{os.path.basename(file_path)}.json"
                         if os.path.exists(meta_path):
                             os.remove(meta_path)
@@ -86,8 +84,8 @@ cleanup_thread = threading.Thread(target=auto_cleanup)
 cleanup_thread.daemon = True
 cleanup_thread.start()
 
-def get_video_info_robust(url):
-    """Get video info with enhanced anti-blocking"""
+def get_video_info_safe(url):
+    """Safe video info extraction with browser impersonation"""
     try:
         video_id = extract_video_id(url)
         if not video_id:
@@ -100,169 +98,224 @@ def get_video_info_robust(url):
             '--dump-json',
             '--no-warnings',
             '--quiet',
+            '--impersonate', 'chrome',  # Browser impersonation
             '--user-agent', user_agent,
-            '--sleep-interval', str(random.randint(1, 5)),
-            '--extractor-retries', '3',
-            '--fragment-retries', '3',
-            '--force-ipv4',  # Force IPv4 to avoid issues
-            '--no-check-certificates',
+            '--sleep-interval', '2',
+            '--extractor-retries', '2',
             url
         ]
         
-        # Add proxy if available
-        if PROXIES:
-            cmd.extend(['--proxy', random.choice(PROXIES)])
+        # Add browser-like headers
+        cmd.extend([
+            '--add-header', 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            '--add-header', 'Accept-Language: en-US,en;q=0.5',
+            '--add-header', 'Accept-Encoding: gzip, deflate',
+            '--add-header', 'Sec-Fetch-Mode: navigate',
+            '--add-header', 'Sec-Fetch-Site: same-origin',
+            '--add-header', 'Sec-Fetch-User: ?1',
+            '--add-header', 'Upgrade-Insecure-Requests: 1'
+        ])
         
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         
         if result.returncode == 0:
             info = json.loads(result.stdout)
             return {
-                'title': info.get('title', 'Unknown Title')[:100],
+                'title': info.get('title', 'Audio')[:100],
                 'duration': info.get('duration', 0),
                 'thumbnail': info.get('thumbnail', f'https://img.youtube.com/vi/{video_id}/hqdefault.jpg'),
-                'uploader': info.get('uploader', 'Unknown')[:50],
-                'view_count': info.get('view_count', 0),
-                'upload_date': info.get('upload_date', ''),
+                'uploader': info.get('uploader', 'Unknown Artist')[:50],
                 'video_id': video_id,
                 'success': True
             }
-        return {'success': False, 'error': 'Info extraction failed'}
+        return {'success': False, 'error': 'Could not get video info'}
     except subprocess.TimeoutExpired:
         return {'success': False, 'error': 'Info timeout'}
-    except Exception as e:
-        return {'success': False, 'error': str(e)}
+    except:
+        return {'success': False, 'error': 'Info extraction failed'}
 
-def bulletproof_download(url):
-    """Multiple fallback download methods with enhanced anti-blocking"""
-    methods = [
-        'mobile_optimized',
-        'basic_download', 
-        'simple_format',
-        'emergency_fallback',
-        'low_quality_fallback'
-    ]
-    
-    for method in methods:
-        try:
-            result = attempt_download_method(url, method)
-            if result['success']:
-                return result
-            time.sleep(random.randint(2, 5))  # Random pause between attempts
-        except:
-            continue
-    
-    return {'success': False, 'error': 'All download methods failed'}
-
-def attempt_download_method(url, method):
-    """Try different download approaches with anti-blocking"""
-    file_id = str(uuid.uuid4())[:8]
-    output_path = f"/app/downloads/audio_{file_id}.mp3"
-    user_agent = random.choice(USER_AGENTS)
-    
-    base_cmd = [
-        'yt-dlp',
-        '--user-agent', user_agent,
-        '--sleep-interval', str(random.randint(2, 6)),
-        '--extractor-retries', '3',
-        '--fragment-retries', '3',
-        '--no-warnings',
-        '--quiet',
-        '--force-ipv4',
-        '--no-check-certificates',
-        '--compat-options', 'no-youtube-unavailable-videos'
-    ]
-    
-    # Add proxy if available
-    if PROXIES:
-        base_cmd.extend(['--proxy', random.choice(PROXIES)])
-    
-    if method == 'mobile_optimized':
-        cmd = base_cmd + [
-            '-x',
-            '--audio-format', 'mp3',
-            '--audio-quality', '192K',
-            '--format', 'bestaudio[height<=480]',
-            '--throttled-rate', '100K',
-            '-o', output_path,
-            url
-        ]
-    
-    elif method == 'basic_download':
-        cmd = base_cmd + [
-            '-x',
-            '--audio-format', 'mp3', 
-            '--audio-quality', '128K',
-            '--format', 'worstaudio/worst',
-            '--throttled-rate', '50K',
-            '-o', output_path,
-            url
-        ]
-    
-    elif method == 'simple_format':
-        cmd = base_cmd + [
-            '--format', 'bestaudio',
-            '--extract-audio',
-            '--audio-format', 'mp3',
-            '-o', output_path,
-            url
-        ]
-    
-    elif method == 'low_quality_fallback':
-        cmd = base_cmd + [
-            '-x',
-            '--audio-format', 'm4a',  # Different format
-            '--format', 'worstaudio',
-            '-o', output_path.replace('.mp3', '.%(ext)s'),
-            url
-        ]
-    
-    else:  # emergency_fallback
+def safe_download(url):
+    """Download with browser impersonation"""
+    try:
+        file_id = str(uuid.uuid4())[:8]
+        output_path = f"/app/downloads/audio_{file_id}.mp3"
+        user_agent = random.choice(USER_AGENTS)
+        
+        # Browser impersonation download command
         cmd = [
             'yt-dlp',
-            '-x',
-            '--audio-format', 'mp3',
-            '--no-warnings',
+            '--impersonate', 'chrome',  # New impersonation feature
+            '-x', '--audio-format', 'mp3',
+            '--audio-quality', '192K',
+            '--user-agent', user_agent,
+            '--no-warnings', '--quiet',
+            '--extractor-retries', '3',
+            '--fragment-retries', '3',
             '-o', output_path,
             url
         ]
-    
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        
+        # Add realistic browser headers
+        cmd.extend([
+            '--add-header', 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            '--add-header', 'Accept-Language: en-US,en;q=0.5',
+            '--add-header', 'Accept-Encoding: gzip, deflate',
+            '--add-header', 'Sec-Fetch-Mode: navigate',
+            '--add-header', 'Sec-Fetch-Site: same-origin',
+            '--add-header', 'Sec-Fetch-User: ?1',
+            '--add-header', 'Upgrade-Insecure-Requests: 1',
+            '--add-header', 'DNT: 1',
+            '--add-header', 'Connection: keep-alive'
+        ])
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
         
         if result.returncode == 0 and os.path.exists(output_path):
-            # If we downloaded m4a, convert to mp3
-            if method == 'low_quality_fallback' and output_path.endswith('.m4a'):
-                mp3_path = output_path.replace('.m4a', '.mp3')
-                convert_cmd = ['ffmpeg', '-i', output_path, '-codec:a', 'libmp3lame', '-qscale:a', '2', '-y', mp3_path]
-                subprocess.run(convert_cmd, check=True)
-                os.remove(output_path)
-                output_path = mp3_path
-            
             return {
                 'success': True,
                 'file_path': output_path,
                 'filename': os.path.basename(output_path),
-                'method_used': method,
                 'file_size': os.path.getsize(output_path)
             }
-        else:
-            return {'success': False, 'error': f'{method} failed'}
-            
+        return {'success': False, 'error': 'Download failed'}
     except subprocess.TimeoutExpired:
-        return {'success': False, 'error': f'{method} timeout'}
+        return {'success': False, 'error': 'Download timeout'}
     except Exception as e:
-        return {'success': False, 'error': f'{method}: {str(e)}'}
+        return {'success': False, 'error': str(e)}
+
+# ================== VERIFICATION ENDPOINTS ================== #
+
+@app.route('/version')
+def version_info():
+    """Check yt-dlp version and features"""
+    try:
+        # Check version
+        version_result = subprocess.run(['yt-dlp', '--version'], capture_output=True, text=True)
+        
+        # Check impersonation support
+        help_result = subprocess.run(['yt-dlp', '--help'], capture_output=True, text=True)
+        has_impersonate = 'impersonate' in help_result.stdout.lower()
+        
+        # Check FFmpeg
+        ffmpeg_result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True)
+        ffmpeg_available = ffmpeg_result.returncode == 0
+        
+        return jsonify({
+            "yt_dlp_version": version_result.stdout.strip(),
+            "impersonation_supported": has_impersonate,
+            "ffmpeg_available": ffmpeg_available,
+            "status": "success"
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/verify')
+def verify_system():
+    """Comprehensive system verification"""
+    tests = []
+    
+    # Test 1: yt-dlp version
+    try:
+        version_result = subprocess.run(['yt-dlp', '--version'], capture_output=True, text=True)
+        tests.append({
+            "test": "yt-dlp_version",
+            "status": "passed" if version_result.returncode == 0 else "failed",
+            "version": version_result.stdout.strip() if version_result.returncode == 0 else "unknown"
+        })
+    except:
+        tests.append({"test": "yt-dlp_version", "status": "failed"})
+    
+    # Test 2: FFmpeg availability
+    try:
+        ffmpeg_result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True)
+        tests.append({
+            "test": "ffmpeg_available",
+            "status": "passed" if ffmpeg_result.returncode == 0 else "failed"
+        })
+    except:
+        tests.append({"test": "ffmpeg_available", "status": "failed"})
+    
+    # Test 3: Directory permissions
+    downloads_writable = os.access('/app/downloads', os.W_OK)
+    metadata_writable = os.access('/app/metadata', os.W_OK)
+    tests.append({
+        "test": "directory_permissions",
+        "status": "passed" if downloads_writable and metadata_writable else "failed",
+        "downloads_writable": downloads_writable,
+        "metadata_writable": metadata_writable
+    })
+    
+    # Test 4: Impersonation support
+    try:
+        help_result = subprocess.run(['yt-dlp', '--help'], capture_output=True, text=True)
+        has_impersonate = 'impersonate' in help_result.stdout.lower()
+        tests.append({
+            "test": "impersonation_support",
+            "status": "passed" if has_impersonate else "failed",
+            "supported": has_impersonate
+        })
+    except:
+        tests.append({"test": "impersonation_support", "status": "failed"})
+    
+    # Determine overall status
+    all_passed = all(test['status'] == 'passed' for test in tests)
+    
+    return jsonify({
+        "status": "success" if all_passed else "degraded",
+        "timestamp": time.time(),
+        "tests": tests,
+        "message": "All systems operational" if all_passed else "Some systems degraded"
+    })
+
+@app.route('/test-download')
+def test_download():
+    """Test download functionality with a known working video"""
+    test_url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"  # Rick Astley - Never Gonna Give You Up
+    
+    try:
+        start_time = time.time()
+        download_result = safe_download(test_url)
+        
+        if download_result['success']:
+            download_time = round(time.time() - start_time, 2)
+            
+            # Clean up test file
+            try:
+                os.remove(download_result['file_path'])
+            except:
+                pass
+                
+            return jsonify({
+                "status": "success",
+                "download_time": download_time,
+                "file_size_mb": round(download_result.get('file_size', 0) / 1024 / 1024, 2),
+                "message": "Download test passed"
+            })
+        else:
+            return jsonify({
+                "status": "failed",
+                "error": download_result.get('error', 'Download failed'),
+                "message": "Download test failed"
+            }), 500
+            
+    except Exception as e:
+        return jsonify({
+            "status": "failed",
+            "error": str(e),
+            "message": "Download test error"
+        }), 500
+
+# ================== MAIN ENDPOINTS ================== #
 
 @app.before_request
 def before_request():
-    """Rate limiting and security"""
+    """Rate limiting"""
     if not rate_limit_check():
         return jsonify({"error": "Rate limit exceeded", "retry_after": "60 seconds"}), 429
 
 @app.route('/download', methods=['GET'])
 def download_audio():
-    """Enhanced main download with anti-blocking"""
+    """Main download endpoint with browser impersonation"""
     if not rate_limit_check():
         return jsonify({"error": "Rate limit exceeded"}), 429
     
@@ -270,18 +323,18 @@ def download_audio():
     if not url:
         return jsonify({"error": "URL parameter required"}), 400
     
-    # Validate YouTube URL
-    if not any(domain in url for domain in ['youtube.com', 'youtu.be', 'm.youtube.com']):
+    # Basic YouTube URL validation
+    if 'youtube.com/' not in url and 'youtu.be/' not in url:
         return jsonify({"error": "Only YouTube URLs supported"}), 400
     
     try:
         start_time = time.time()
         
-        # Get info first
-        video_info = get_video_info_robust(url)
+        # Get basic info
+        video_info = get_video_info_safe(url)
         
-        # Download with multiple fallbacks
-        download_result = bulletproof_download(url)
+        # Download audio with browser impersonation
+        download_result = safe_download(url)
         
         if download_result['success']:
             download_time = round(time.time() - start_time, 2)
@@ -291,28 +344,30 @@ def download_audio():
                 "download_url": f"https://yt-dlp-munax.koyeb.app/file/{download_result['filename']}",
                 "filename": download_result['filename'],
                 "download_time": download_time,
-                "method_used": download_result.get('method_used', 'unknown'),
                 "file_size_mb": round(download_result.get('file_size', 0) / 1024 / 1024, 2),
                 "metadata": {
                     "title": video_info.get('title', 'Audio') if video_info.get('success') else 'Audio',
                     "duration": video_info.get('duration', 0) if video_info.get('success') else 0,
-                    "artist": video_info.get('uploader', 'Unknown') if video_info.get('success') else 'Unknown',
+                    "artist": video_info.get('uploader', 'Unknown Artist') if video_info.get('success') else 'Unknown Artist',
                     "thumbnail": video_info.get('thumbnail', '') if video_info.get('success') else '',
-                    "video_id": video_info.get('video_id', '')
+                    "video_id": video_info.get('video_id', '') if video_info.get('success') else ''
                 }
             }
             
             # Save metadata
-            metadata_path = f"/app/metadata/{download_result['filename']}.json"
-            with open(metadata_path, 'w') as f:
-                json.dump(response_data, f)
+            try:
+                metadata_path = f"/app/metadata/{download_result['filename']}.json"
+                with open(metadata_path, 'w') as f:
+                    json.dump(response_data, f)
+            except:
+                pass
                 
             return jsonify(response_data)
         else:
             return jsonify({
                 "status": "failed",
                 "error": download_result.get('error', 'Download failed'),
-                "suggestion": "Video might be geo-blocked, age-restricted, or temporarily unavailable"
+                "suggestion": "Try again or use a different video"
             }), 500
             
     except Exception as e:
@@ -332,8 +387,8 @@ def serve_file(filename):
         if os.path.exists(file_path):
             return send_file(file_path, as_attachment=True, download_name=safe_name)
         
-        return jsonify({"error": "File not found or expired"}), 404
-    except Exception as e:
+        return jsonify({"error": "File not found"}), 404
+    except:
         return jsonify({"error": "File service error"}), 500
 
 @app.route('/info', methods=['GET'])
@@ -346,7 +401,7 @@ def get_info():
     if not url:
         return jsonify({"error": "URL parameter required"}), 400
     
-    info = get_video_info_robust(url)
+    info = get_video_info_safe(url)
     if info.get('success'):
         return jsonify({"status": "success", "data": info})
     else:
@@ -357,19 +412,15 @@ def get_info():
 
 @app.route('/health')
 def health_check():
-    """Health check with system stats"""
+    """Health check endpoint"""
     try:
         files_count = len(glob.glob('/app/downloads/*'))
-        metadata_count = len(glob.glob('/app/metadata/*'))
-        
         return jsonify({
             "status": "healthy",
             "timestamp": time.time(),
             "files_stored": files_count,
-            "metadata_stored": metadata_count,
-            "auto_cleanup": "active",
-            "rate_limits": f"{len(request_timestamps)}/{MAX_REQUESTS_PER_MINUTE}",
-            "service": "bulletproof-yt-api"
+            "service": "yt-audio-api",
+            "feature": "browser-impersonation"
         })
     except:
         return jsonify({"status": "degraded"}), 500
@@ -379,8 +430,6 @@ def manual_cleanup():
     """Manual cleanup endpoint"""
     try:
         deleted_files = 0
-        deleted_metadata = 0
-        
         for file_path in glob.glob('/app/downloads/*'):
             try:
                 os.remove(file_path)
@@ -388,6 +437,7 @@ def manual_cleanup():
             except:
                 pass
         
+        deleted_metadata = 0
         for meta_path in glob.glob('/app/metadata/*'):
             try:
                 os.remove(meta_path)
@@ -400,57 +450,37 @@ def manual_cleanup():
             "deleted_files": deleted_files,
             "deleted_metadata": deleted_metadata
         })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/stats')
-def stats():
-    """API statistics"""
-    return jsonify({
-        "requests_last_minute": len(request_timestamps),
-        "max_requests_per_minute": MAX_REQUESTS_PER_MINUTE,
-        "user_agents_available": len(USER_AGENTS),
-        "proxies_available": len(PROXIES),
-        "auto_cleanup_interval": "2 hours"
-    })
+    except:
+        return jsonify({"error": "Cleanup failed"}), 500
 
 @app.route('/')
 def home():
     """API documentation"""
     return jsonify({
-        "name": "🛡️ ULTIMATE ANTI-BLOCK YouTube Audio API",
-        "version": "5.0 - Maximum Protection",
+        "message": "🎵 YouTube Audio Downloader API",
+        "version": "4.0 - Browser Impersonation",
         "status": "active",
         "features": [
-            "🛡️ Advanced anti-blocking system",
-            "🔄 5+ fallback methods", 
-            "📱 Mobile-optimized downloads",
-            "🧹 Smart auto-cleanup",
-            "📊 Rich metadata support",
-            "⚡ 95%+ success rate",
-            "🔒 Rate limiting protection",
-            "🌐 Proxy support ready"
+            "🛡️ Browser Impersonation (Chrome)",
+            "🎵 High-quality MP3 downloads",
+            "🧹 Auto-cleanup system",
+            "🔒 Rate limiting",
+            "📊 Metadata support",
+            "✅ Verification endpoints"
         ],
         "endpoints": {
             "download": "/download?url=YOUTUBE_URL",
-            "info_only": "/info?url=YOUTUBE_URL",
-            "download_file": "/file/FILENAME.mp3",
-            "health_check": "/health",
-            "stats": "/stats",
-            "manual_cleanup": "/cleanup (POST)"
-        },
-        "anti_blocking_techniques": [
-            "Rotating user agents (5+)",
-            "Random sleep intervals", 
-            "Multiple download strategies",
-            "Quality fallbacks",
-            "IPv4 forcing",
-            "Certificate verification skip",
-            "Mobile device emulation"
-        ]
+            "info": "/info?url=YOUTUBE_URL",
+            "file_download": "/file/FILENAME.mp3",
+            "health": "/health",
+            "cleanup": "/cleanup (POST)",
+            "version": "/version",
+            "verify": "/verify",
+            "test-download": "/test-download"
+        }
     })
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    print("🛡️ Starting ULTIMATE ANTI-BLOCK YouTube API...")
+    port = int(os.environ.get('PORT', 8000))
+    print(f"🚀 Starting YouTube Audio API with Browser Impersonation on port {port}")
     app.run(host='0.0.0.0', port=port, debug=False)
