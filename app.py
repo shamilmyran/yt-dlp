@@ -21,13 +21,13 @@ ultra_fast_opts = {
     'socket_timeout': 10,
     'retries': 1,
     'fragment_retries': 1,
-    'http_chunk_size': 15728640,  # 15MB chunks
-    'concurrent_fragment_downloads': 4,  # Parallel downloads
-    'throttled_rate': None,  # No speed limit
-    'sleep_interval': 0,     # No delay
+    'http_chunk_size': 15728640,
+    'concurrent_fragment_downloads': 4,
+    'throttled_rate': None,
+    'sleep_interval': 0,
     'ignoreerrors': True,
     'user_agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15',
-    'postprocessors': [],    # NO CONVERSION = MAX SPEED
+    'postprocessors': [],
     'noprogress': True,
     'quiet': True,
 }
@@ -59,9 +59,16 @@ def download_task(url, job_id, options, format_type):
         start_time = time.time()
         
         with yt_dlp.YoutubeDL(options) as ydl:
+            # FIX: Check if info is not None before using .get()
             info = ydl.extract_info(url, download=True)
-            title = info.get('title', 'Audio')
-            duration = info.get('duration', 0)
+            
+            # SAFE WAY: Handle None info object
+            if info is None:
+                title = "Unknown Title"
+                duration = 0
+            else:
+                title = info.get('title', 'Unknown Title')
+                duration = info.get('duration', 0)
             
             # Find downloaded file
             time.sleep(1)
@@ -89,7 +96,11 @@ def download_task(url, job_id, options, format_type):
             }
             
     except Exception as e:
-        status_data = {'status': 'failed', 'error': str(e)}
+        status_data = {
+            'status': 'failed', 
+            'error': str(e),
+            'failure_time': time.time()
+        }
     
     with open(status_file, 'w') as f:
         json.dump(status_data, f)
@@ -100,7 +111,6 @@ def download_audio():
     if not url:
         return jsonify({"error": "?url= missing"}), 400
     
-    # Choose format: fast (m4a) or mp3 (quality)
     format_type = request.args.get('format', 'fast')
     options = mp3_opts if format_type == 'mp3' else ultra_fast_opts
     
@@ -123,10 +133,21 @@ def download_audio():
 @app.route('/status/<job_id>')
 def check_status(job_id):
     status_file = f'/app/status/{job_id}.json'
-    if os.path.exists(status_file):
+    if not os.path.exists(status_file):
+        return jsonify({"error": "Job not found"}), 404
+    
+    try:
         with open(status_file, 'r') as f:
-            return jsonify(json.load(f))
-    return jsonify({"error": "Job not found"}), 404
+            status_data = json.load(f)
+        
+        # Add elapsed time for processing jobs
+        if status_data.get('status') == 'processing' and 'start_time' in status_data:
+            elapsed = time.time() - status_data['start_time']
+            status_data['elapsed_seconds'] = round(elapsed, 2)
+        
+        return jsonify(status_data)
+    except:
+        return jsonify({"error": "Error reading status"}), 500
 
 @app.route('/download/<filename>')
 def download_file(filename):
@@ -136,18 +157,57 @@ def download_file(filename):
         
         if os.path.exists(file_path):
             return send_file(file_path, as_attachment=True)
+        
+        # Try to find the file with different extensions
+        all_files = glob.glob('/app/downloads/*')
+        for actual_file in all_files:
+            if secure_filename(os.path.basename(actual_file)) == safe_name:
+                return send_file(actual_file, as_attachment=True)
+        
         return jsonify({"error": "File not found"}), 404
-    except:
-        return jsonify({"error": "Download error"}), 500
+    except Exception as e:
+        return jsonify({"error": f"Download error: {str(e)}"}), 500
+
+@app.route('/cleanup', methods=['POST'])
+def cleanup_files():
+    """Clean up all files"""
+    try:
+        deleted_count = 0
+        for file_path in glob.glob('/app/downloads/*'):
+            try:
+                os.remove(file_path)
+                deleted_count += 1
+            except:
+                pass
+        
+        # Clean status files too
+        status_count = 0
+        for status_file in glob.glob('/app/status/*.json'):
+            try:
+                os.remove(status_file)
+                status_count += 1
+            except:
+                pass
+        
+        return jsonify({
+            "message": "Cleanup completed",
+            "deleted_files": deleted_count,
+            "deleted_status_files": status_count
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/')
 def home():
     return jsonify({
         "message": "YouTube Audio Downloader",
+        "status": "active",
         "endpoints": {
             "fast_download": "/download?url=URL&format=fast",
             "quality_download": "/download?url=URL&format=mp3",
-            "check_status": "/status/JOB_ID"
+            "check_status": "/status/JOB_ID",
+            "download_file": "/download/FILENAME",
+            "cleanup": "/cleanup (POST)"
         }
     })
 
